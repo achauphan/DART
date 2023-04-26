@@ -107,6 +107,7 @@ real(r8), allocatable  :: exp_true_correl(:), alpha(:)
 ! if adjust_obs_impact is true, read in triplets from the ascii file
 ! and fill this 2d impact table.
 real(r8), allocatable  :: obs_impact_table(:,:)
+!$acc declare create(obs_impact_table)
 
 character(len=*), parameter :: source = 'assim_tools_mod.f90'
 
@@ -130,7 +131,9 @@ integer  :: filter_kind                     = 1
 real(r8) :: cutoff                          = 0.2_r8
 logical  :: sort_obs_inc                    = .false.
 logical  :: spread_restoration              = .false.
+!$acc declare create(spread_restoration)
 logical  :: sampling_error_correction       = .false.
+!$acc declare create(sampling_error_correction)
 integer  :: adaptive_localization_threshold = -1
 real(r8) :: adaptive_cutoff_floor           = 0.0_r8
 integer  :: print_every_nth_obs             = 0
@@ -150,6 +153,7 @@ logical  :: gaussian_likelihood_tails       = .false.
 ! False by default; if true, expect to read in an ascii table
 ! to adjust the impact of obs on other state vector and obs values.
 logical            :: adjust_obs_impact  = .false.
+!$acc declare create(adjust_obs_impact)
 character(len=256) :: obs_impact_filename = ''
 logical            :: allow_any_impact_values = .false.
 
@@ -194,6 +198,25 @@ namelist / assim_tools_nml / filter_kind, cutoff, sort_obs_inc, &
    distribute_mean, close_obs_caching,                                     &
    adjust_obs_impact, obs_impact_filename, allow_any_impact_values,        &
    convert_all_state_verticals_first, convert_all_obs_verticals_first
+
+
+
+! AC-- namelist for hacked in comp_reg_factor function
+! AC-- hacky delcaration of reg_factor_mod namelist vars
+logical :: namelist_initialized = .false.
+integer :: select_regression = 1
+!$acc declare create(select_regression)
+! Value 1 selects default: Compute using sampling theory for any ensemble size
+! Value 2 selects L96 file format: Works for archived 40 observation L96 files
+! Value 3 selects bgrid archive default: Reads in file from bgrid experiments
+character(len = 129) :: input_reg_file = "time_mean_reg"
+character(len = 129) :: reg_diagnostics_file = "reg_diagnostics"
+logical              :: save_reg_diagnostics = .false.
+
+namelist / reg_factor_nml / select_regression, input_reg_file, &
+                            save_reg_diagnostics, reg_diagnostics_file
+
+
 
 !============================================================================
 
@@ -545,6 +568,7 @@ endif
 allow_missing_in_state = get_missing_ok_status()
 
 ! Loop through all the (global) observations sequentially
+
 SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
    ! Some compilers do not like mod by 0, so test first.
    if (print_every_nth_obs > 0) nth_obs = mod(i, print_every_nth_obs)
@@ -637,6 +661,10 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
       call set_vertical(base_obs_loc, vertvalue_obs_in_localization_coord, whichvert_obs_in_localization_coord)
 
    ! Compute observation space increments for each group
+   
+   ! test inflate here before acc region as local var then pass in obs_increment
+   
+   !!$acc parallel loop independent
    do group = 1, num_groups
       grp_bot = grp_beg(group); grp_top = grp_end(group)
       call obs_increment(obs_prior(grp_bot:grp_top), grp_size, obs(1), &
@@ -649,6 +677,8 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
          (grp_size - 1)
       if (obs_prior_var(group) < 0.0_r8) obs_prior_var(group) = 0.0_r8
    end do
+   !!$acc end parallel loop
+   
 
    ! Compute updated values for single state space inflation
    if(local_single_ss_inflate) then
@@ -690,6 +720,7 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
    !call test_close_obs_dist(close_state_dist, num_close_states, i)
 
    ! Loop through to update each of my state variables that is potentially close
+   !$acc parallel loop independent 
    STATE_UPDATE: do j = 1, num_close_states
       state_index = close_state_ind(j)
 
@@ -699,7 +730,8 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
       endif
 
       ! Compute the covariance localization and adjust_obs_impact factors (module storage)
-      final_factor = cov_and_impact_factors(base_obs_loc, base_obs_type, my_state_loc(state_index), &
+         !!$acc routine(cov_and_impact_factors) seq
+         final_factor = cov_and_impact_factors(base_obs_loc, base_obs_type, my_state_loc(state_index), &
          my_state_kind(state_index), close_state_dist(j), cutoff_rev)
 
       if(final_factor <= 0.0_r8) cycle STATE_UPDATE
@@ -709,19 +741,20 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
          obs_prior_mean, obs_prior_var, base_obs_loc, base_obs_type, obs_time, &
          net_a, grp_size, grp_beg, grp_end, i, &
          my_state_indx(state_index), final_factor, correl, local_varying_ss_inflate, inflate_only)
-
+      ! AC-- openacc hacking
       ! Compute spatially-varying state space inflation
-      if(local_varying_ss_inflate) then
-         do group = 1, num_groups
-            call update_varying_state_space_inflation(inflate,                     &
-               ens_handle%copies(ENS_INF_COPY, state_index),                       &
-               ens_handle%copies(ENS_INF_SD_COPY, state_index),                    &
-               ens_handle%copies(ENS_SD_COPY, state_index),                        &
-               orig_obs_prior_mean(group), orig_obs_prior_var(group), obs(1),      &
-               obs_err_var, grp_size, final_factor, correl(group), inflate_only)
-         end do
-      endif
+     ! if(local_varying_ss_inflate) then
+     !    do group = 1, num_groups
+     !       call update_varying_state_space_inflation(inflate,                     &
+     !          ens_handle%copies(ENS_INF_COPY, state_index),                       &
+     !          ens_handle%copies(ENS_INF_SD_COPY, state_index),                    &
+     !          ens_handle%copies(ENS_SD_COPY, state_index),                        &
+     !          orig_obs_prior_mean(group), orig_obs_prior_var(group), obs(1),      &
+     !          obs_err_var, grp_size, final_factor, correl(group), inflate_only)
+     !    end do
+     ! endif
    end do STATE_UPDATE
+   !$acc end parallel loop 
 
    if(.not. inflate_only) then
       ! Now everybody updates their obs priors (only ones after this one)
@@ -749,7 +782,6 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
       end do OBS_UPDATE
    endif
 end do SEQUENTIAL_OBS
-
 ! Every pe needs to get the current my_inflate and my_inflate_sd back
 if(local_single_ss_inflate) then
    ens_handle%copies(ENS_INF_COPY, :) = my_inflate
@@ -1332,7 +1364,7 @@ end subroutine obs_increment_kernel
 subroutine update_from_obs_inc(obs, obs_prior_mean, obs_prior_var, obs_inc, &
                state, ens_size, state_inc, reg_coef, net_a_in, correl_out)
 !========================================================================
-
+!!$acc routine seq
 ! Does linear regression of a state variable onto an observation and
 ! computes state variable increments from observation increments
 
@@ -1392,7 +1424,8 @@ if(present(correl_out)) correl_out = correl
 
 ! Get the expected actual correlation and the regression weight reduction factor
 if(sampling_error_correction) then
-   call get_correction_from_table(correl, mean_factor, exp_true_correl, ens_size)
+   ! AC-- commneted out get_correction call for openacc hacking--   
+   ! AC-- call get_correction_from_table(correl, mean_factor, exp_true_correl, ens_size)
    ! Watch out for division by zero; if correl is really small regression is safely 0
    if(abs(correl) > 0.001_r8) then
       reg_coef = reg_coef * (exp_true_correl / correl) * mean_factor
@@ -2134,9 +2167,12 @@ do group = 1, num_groups
    endif
 end do
 
+! AC-- openacc hacking
+! AC-- comp_reg_factor function placed locally here instead of in reg_factor_mod
 if(num_groups > 1) then
-   reg_factor = comp_reg_factor(num_groups, reg_coef, obs_time, &
+   reg_factor = comp_reg_factor2(num_groups, reg_coef, obs_time, &
       reg_factor_obs_index, reg_factor_ens_index)
+    !!$acc routine(comp_reg_factor2) seq
    final_factor = min(final_factor, reg_factor)
 endif
 
@@ -2147,8 +2183,151 @@ end subroutine obs_updates_ens
 
 !-------------------------------------------------------------
 
+function comp_reg_factor2(num_groups, regress, obs_time, &
+   obs_index, state_index, obs_state_ind, obs_state_max)
+!!$acc routine seq
+
+! Computes factor by which to multiply regression coefficients
+! for a given distribution of sample regressions OR computes
+! factor for a single sample of a regression using some other
+! methodology (for instance time mean from previous runs). Could
+! also implement the standard distance dependence method, too.
+
+integer,         intent(in) :: num_groups
+real(r8),        intent(in) :: regress(num_groups)
+type(time_type), intent(in) :: obs_time
+integer,         intent(in) :: obs_index
+integer(i8),     intent(in) :: state_index
+integer,         intent(in), optional :: obs_state_ind, obs_state_max
+
+real(r8) :: comp_reg_factor2
+
+real(r8) :: sum_reg2, sum_reg_reg
+
+integer :: i, j, ii, jj, iunit, io, secs, days
+
+!--------------------------------------------------------
+! Initialize namelist if not already done
+!if(.not. namelist_initialized) then
+!
+!
+!   namelist_initialized = .true.
+!
+!   ! Read the namelist entry
+!   call find_namelist_in_file("input.nml", "reg_factor_nml", iunit)
+!   read(iunit, nml = reg_factor_nml, iostat = io)
+!   call check_namelist_read(iunit, io, "reg_factor_nml")
+!
+!   ! Record the namelist values used for the run ...
+!   if (do_nml_file()) write(nmlfileunit, nml=reg_factor_nml)
+!   if (do_nml_term()) write(     *     , nml=reg_factor_nml)
+!
+!   ! See if diagnostic output is requested, if so, open file
+!   ! if(save_reg_diagnostics) then
+!   !   diag_unit = open_file(reg_diagnostics_file, action = 'write')
+!   ! endif
+!
+!endif
+!---------------------------------------------------------
+
+!_____________________________________________________________________
+if(select_regression == 1) then
+
+! ---> Get regression directly from sampling theory
+! If only one group, don't know what else to do
+   ! AC-- comp_reg_factor rename -> comp_reg_factor2--
+   if(num_groups == 1) then
+      comp_reg_factor2 = 1.0_r8
+   else
+
+      sum_reg_reg = 0.0_r8
+      sum_reg2 = sum(regress * regress)
+      do i = 1, num_groups
+         do j = i + 1, num_groups
+            sum_reg_reg = sum_reg_reg + regress(i) * regress(j)
+         end do                                               
+      end do
+      if (sum_reg2 /= 0.0_r8) then
+         comp_reg_factor2 = 2.0_r8 * sum_reg_reg / (sum_reg2 * (num_groups - 1))
+      else
+         comp_reg_factor2 = 0.0_r8
+      endif
+
+      if(comp_reg_factor2 < 0.0_r8) comp_reg_factor2 = 0.0_r8
+
+      ! AC-- DELETED Write out diagnostic information
+   endif
+
+!___________________________________________________________________
+
+! AC-- select_regression is always 1 right???
+!else if(select_regression == 2) then
+
+!      if(save_reg_diagnostics) then
+!       
+!! DATA REDUCTION FOR WORKSHOP PURPOSES
+!         if(obs_index <= 4 .and. state_index > 0) then
+!
+!         call get_time(obs_time, secs, days)
+!         write(diag_unit, 22) days, secs, obs_index, state_index, comp_reg_factor
+!         22 format(4(i7, 1x), e14.4)
+!         endif
+!      endif
+     ! AC-- DELETE FOR COPY
+! Table lookup version for time mean, temporary implementation
+! This only works for a model with a time invariant observation set
+!   if(first_call) then
+!      first_call = .false.
+!! Read in the regression statistics file
+!      iunit = get_unit()
+!      open(unit = iunit, file = input_reg_file)
+!      read(iunit, *) num_obs, model_size
+!      allocate(time_mean_reg(num_obs, model_size))
+!      do j = 1, num_obs
+!         do i = 1, model_size
+!            read(iunit, *) jj, ii, time_mean_reg(j, i)
+!         end do
+!      end do
+!      close(iunit)
+!   endif
+!
+!   comp_reg_factor = time_mean_reg(obs_index, state_index)
+!
+!   if(comp_reg_factor < 0.0_r8) comp_reg_factor = 0.0_r8
+!
+!!_____________________________________________________________________
+!
+!else if(select_regression == 3) then
+!
+!   if(first_call) then
+!      first_call = .false.
+!      iunit = get_unit()
+!      open(unit = iunit, file = 'obs_state_reg_file')
+!      allocate(obs_state_reg(obs_state_max))
+!      do i = 1, obs_state_max
+!         read(iunit, 11) obs_state_reg(i)
+!         close(unit = iunit)
+!11    format(f5.3)
+!      end do 
+!   end if
+!
+!   comp_reg_factor = obs_state_reg(obs_state_ind)
+
+!_____________________________________________________________________
+
+else
+!   call error_handler(E_ERR,'comp_reg_factor', &
+ !     'Illegal value for namelist parameter select_regression',source)
+endif
+
+end function comp_reg_factor2
+
+!------------------------------------------------------------------------
+
 function cov_and_impact_factors(base_obs_loc, base_obs_type, state_loc, state_kind, &
 dist, cutoff_rev)
+
+!$acc routine seq
 
 ! Computes the cov_factor and multiplies by obs_impact_factor if selected
 

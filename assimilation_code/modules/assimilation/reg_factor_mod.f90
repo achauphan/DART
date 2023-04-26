@@ -104,7 +104,7 @@ endif
 !_____________________________________________________________________
 if(select_regression == 1) then
 
-! Get regression directly from sampling theory
+! ---> Get regression directly from sampling theory
 ! If only one group, don't know what else to do
    if(num_groups == 1) then
       comp_reg_factor = 1.0_r8
@@ -125,7 +125,7 @@ if(select_regression == 1) then
 
       if(comp_reg_factor < 0.0_r8) comp_reg_factor = 0.0_r8
 
-      ! Write out diagnostic information
+      ! AC-- DELETE Write out diagnostic information
       if(save_reg_diagnostics) then
        
 ! DATA REDUCTION FOR WORKSHOP PURPOSES
@@ -136,7 +136,7 @@ if(select_regression == 1) then
          22 format(4(i7, 1x), e14.4)
          endif
       endif
-
+     ! AC-- DELETE FOR COPY
    endif
 
 !___________________________________________________________________

@@ -23,7 +23,7 @@ character(len=*), parameter :: source = 'cov_cutoff_mod.f90'
 
 !---- namelist with default values
 logical :: namelist_initialized = .false.
-
+!$acc declare create(namelist_initialized)
 integer :: select_localization = 1
 ! Value 1 selects default Gaspari-Cohn cutoff
 ! Value 2 selects boxcar
@@ -41,6 +41,8 @@ contains
 
 function comp_cov_factor(z_in, c, obs_loc, obs_type, target_loc, target_kind, &
    localization_override)
+!$acc routine seq
+
 !----------------------------------------------------------------------
 ! function comp_cov_factor(z_in, c)
 !
@@ -75,38 +77,38 @@ integer  :: localization_type
 
 !--------------------------------------------------------
 ! Initialize namelist if not already done
-if(.not. namelist_initialized) then
-
-
-   namelist_initialized = .true.
-
-   ! Read the namelist entry
-   call find_namelist_in_file("input.nml", "cov_cutoff_nml", iunit)
-   read(iunit, nml = cov_cutoff_nml, iostat = io)
-   call check_namelist_read(iunit, io, "cov_cutoff_nml")
-
-   if (do_nml_file()) write(nmlfileunit,nml=cov_cutoff_nml)
-   if (do_nml_term()) write(     *     ,nml=cov_cutoff_nml)
-
-
-   if (do_output()) then
-      select case (select_localization)
-         case (1)
-            call error_handler(E_MSG,'comp_cov_factor:', &
-               'Standard Gaspari Cohn localization selected')
-         case (2)
-            call error_handler(E_MSG,'comp_cov_factor:', &
-               'Boxcar localization selected')
-         case (3)
-            call error_handler(E_MSG,'comp_cov_factor:', &
-               'Ramped localization selected')
-         case default
-            call error_handler(E_ERR,'comp_cov_factor', &
-               'Illegal value of "select_localization" in cov_cutoff_mod namelist', source)
-      end select
-   endif
-
-endif
+!if(.not. namelist_initialized) then
+!
+!
+!   namelist_initialized = .true.
+!
+!   ! Read the namelist entry
+!   call find_namelist_in_file("input.nml", "cov_cutoff_nml", iunit)
+!   read(iunit, nml = cov_cutoff_nml, iostat = io)
+!   call check_namelist_read(iunit, io, "cov_cutoff_nml")
+!
+!   if (do_nml_file()) write(nmlfileunit,nml=cov_cutoff_nml)
+!   if (do_nml_term()) write(     *     ,nml=cov_cutoff_nml)
+!
+!
+!   if (do_output()) then
+!      select case (select_localization)
+!         case (1)
+!            call error_handler(E_MSG,'comp_cov_factor:', &
+!               'Standard Gaspari Cohn localization selected')
+!         case (2)
+!            call error_handler(E_MSG,'comp_cov_factor:', &
+!               'Boxcar localization selected')
+!         case (3)
+!            call error_handler(E_MSG,'comp_cov_factor:', &
+!               'Ramped localization selected')
+!         case default
+!            call error_handler(E_ERR,'comp_cov_factor', &
+!               'Illegal value of "select_localization" in cov_cutoff_mod namelist', source)
+!      end select
+!   endif
+!
+!endif
 !---------------------------------------------------------
 
 if(present(localization_override)) then
@@ -119,7 +121,7 @@ z = abs(z_in)
 
 !----------------------------------------------------------
 
-if(localization_type == 1) then ! Standard Gaspari Cohn localization
+! if(localization_type == 1) then ! Standard Gaspari Cohn localization
 
    if( z >= c*2.0_r8 ) then
 
@@ -145,30 +147,30 @@ if(localization_type == 1) then ! Standard Gaspari Cohn localization
            + 4.0_r8 - 2.0_r8 / (3.0_r8 * r) 
    endif
 
-else if(localization_type == 2) then ! BOXCAR localization
-
-   if(z < 2.0_r8 * c) then
-      comp_cov_factor = 1.0_r8
-   else
-      comp_cov_factor = 0.0_r8
-   endif
-
-else if(localization_type == 3) then ! Ramped localization
-
-   if(z >= 2.0_r8 * c) then
-      comp_cov_factor = 0.0_r8
-   else if(z >= c .and. z < 2.0_r8 * c) then
-      comp_cov_factor = (2.0_r8 * c - z) / c
-   else
-      comp_cov_factor = 1.0_r8
-   endif
-
-else ! Otherwise namelist parameter is illegal; this is an error
-
-     call error_handler(E_ERR,'comp_cov_factor', &
-              'Illegal value of "localization" in cov_cutoff_mod namelist', source)
-
-endif
+!else if(localization_type == 2) then ! BOXCAR localization
+!
+!   if(z < 2.0_r8 * c) then
+!      comp_cov_factor = 1.0_r8
+!   else
+!      comp_cov_factor = 0.0_r8
+!   endif
+!
+!!else if(localization_type == 3) then ! Ramped localization
+!
+!   if(z >= 2.0_r8 * c) then
+!      comp_cov_factor = 0.0_r8
+!   else if(z >= c .and. z < 2.0_r8 * c) then
+!      comp_cov_factor = (2.0_r8 * c - z) / c
+!   else
+!      comp_cov_factor = 1.0_r8
+!   endif
+!
+!!else ! Otherwise namelist parameter is illegal; this is an error
+!
+! !    call error_handler(E_ERR,'comp_cov_factor', &
+! !             'Illegal value of "localization" in cov_cutoff_mod namelist', source)
+!
+!endif
 
 end function comp_cov_factor
 
