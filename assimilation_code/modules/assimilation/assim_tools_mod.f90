@@ -720,6 +720,7 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
    !call test_close_obs_dist(close_state_dist, num_close_states, i)
 
    ! Loop through to update each of my state variables that is potentially close
+   !$acc data copyin(obs_impact_table)   
    !$acc parallel loop independent 
    STATE_UPDATE: do j = 1, num_close_states
       state_index = close_state_ind(j)
@@ -755,7 +756,7 @@ SEQUENTIAL_OBS: do i = 1, obs_ens_handle%num_vars
      ! endif
    end do STATE_UPDATE
    !$acc end parallel loop 
-
+   !$acc end data
    if(.not. inflate_only) then
       ! Now everybody updates their obs priors (only ones after this one)
       OBS_UPDATE: do j = 1, num_close_obs
